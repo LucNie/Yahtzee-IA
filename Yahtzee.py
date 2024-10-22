@@ -1,6 +1,7 @@
 import random
 import numpy as np
 import tensorflow as tf
+import pandas as pd
 
 class Yahtzee:
     def __init__(self):
@@ -137,12 +138,17 @@ class Yahtzee:
 class YahtzeeAI:
     def __init__(self, model_path='yahtzee_model.h5'):
         self.model = tf.keras.models.load_model(model_path)
+        self.total_scores = []  # Liste pour stocker les scores de l'IA
 
     def choose_action(self, dice):
         """Choisir la meilleure action (catégorie de score) basée sur l'état du jeu."""
         input_data = np.array(dice).reshape(1, -1)  # Préparer les données pour le modèle
         prediction = self.model.predict(input_data)
         return np.argmax(prediction)  # Retourne l'indice de la meilleure catégorie
+
+    def save_score(self, score):
+        """Sauvegarde le score total de l'IA."""
+        self.total_scores.append(score)
 
 
 # Exemple d'utilisation
@@ -158,8 +164,14 @@ def main():
         category_name = list(game.scorecard.keys())[action]  # Obtenir le nom de la catégorie à partir de l'indice
         print(f"L'IA choisit la catégorie: {category_name}")
         game.choose_score(category_name)  # IA choisit de marquer des points
+        ai.save_score(game.total_score())  # Enregistrer le score total de l'IA
 
     print(f'\nScore final: {game.total_score()}')
+    print(f'Scores totaux de l\'IA: {ai.total_scores}')  # Affiche les scores totaux de l'IA
+    
+    # Enregistre les scores totaux de l'IA dans un fichier CSV
+    ai_scores_df = pd.DataFrame({'total_score': ai.total_scores})
+    ai_scores_df.to_csv('ai_scores.csv', index=False)  # Enregistre les scores totaux dans un fichier CSV
 
 
 if __name__ == "__main__":
