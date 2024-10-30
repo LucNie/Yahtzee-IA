@@ -1,67 +1,114 @@
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from keras.optimizers import Adam
+from tensorflow.keras.layers import Dense, LSTM, Input, BatchNormalization, Dropout
 import numpy as np
 import random
-from keras.models import Sequential
-from keras.layers import Dense, LSTM
-from keras.optimizers import Adam
+
+
+class ReplayMemory:
+    def __init__(self, max_size):
+        self.memory = []
+        self.max_size = max_size
+
+    def add(self, experience):
+        # Ajouter une nouvelle expérience
+        if len(self.memory) >= self.max_size:
+            self.memory.pop(0)  # Supprimer la plus ancienne expérience
+        self.memory.append(experience)
+
+    def sample(self, batch_size):
+        # Échantillonner un lot d'expériences
+        return random.sample(self.memory, min(batch_size, len(self.memory)))
+
+    def size(self):
+        return len(self.memory)
 
 class YahtzeeAI:
-    def __init__(self):
-        self.memory = []
-        self.gamma = 0.99  # Taux d'actualisation
-        self.epsilon = 1.0  # Taux d'exploration
-        self.epsilon_min = 0.01
-        self.epsilon_decay = 0.995
-        self.batch_size = 32
+    def __init__(self, replay_memory_size=1000):
+        self.model = self.create_model()
+        self.best_score = 0
+        self.replay_memory = ReplayMemory(max_size=replay_memory_size)
 
-        # Modèle de réseau de neurones
-        self.model = self.build_model()
-
-    def build_model(self):
-        model = Sequential()
-        model.add(Dense(64, input_dim=22, activation='relu'))
-        model.add(Dense(64, activation='relu'))
-        model.add(Dense(13, activation='softmax'))  # Choix de catégorie
-        model.add(Dense(5, activation='sigmoid'))  # Choix des dés à relancer
-        model.add(Dense(1, activation='sigmoid'))  # Continuer à relancer
-        model.compile(loss='categorical_crossentropy', optimizer=Adam(learning_rate=0.001))
+    def create_model(self):
+        # Define model architecture
+        model = Sequential([
+            Input(shape=(32,)), # 5 dice values + 13 booleans + 13 scores + 1 round = 32 inputs
+            Dense(128, activation='relu'),  # Augmenté pour mieux capturer les combinaisons
+            # BatchNormalization(),  # Normalisation pour aider à la stabilité de l'apprentissage
+            Dropout(0.2),  # Dropout pour éviter le surapprentissage
+            Dense(64, activation='relu'),
+            Dense(64, activation='relu'),
+            Dense(19, activation='softmax')  # 1 roll vs category, 5 dice reroll indicators, 13 category scores
+        ])
+        # Compile model
+        model.compile(optimizer=Adam(learning_rate=0.001), loss='categorical_crossentropy', metrics=['accuracy'])
         return model
+    
+    
 
-    def remember(self, state, action, reward, next_state):
-        self.memory.append((state, action, reward, next_state))
+    def train(self, inputs, outputs, epochs=10,reward=0):
+        # Convert inputs and outputs to numpy arrays
+        inputs = np.array(inputs, dtype=np.float32)  # Ensure inputs are a NumPy array of type float32
+        outputs = np.array(outputs, dtype=np.float32)  # Ensure outputs are a NumPy array of type float32
+        print("Shape of inputs:", inputs.shape)
+        print("Shape of outputs:", outputs.shape)
+        self.model.fit(inputs, outputs, epochs=epochs)
 
-    def choose_category_action(self, state):
-        if np.random.rand() <= self.epsilon:
-            return random.randrange(13)  # Choix aléatoire
-        act_values = self.model.predict(state)
-        return np.argmax(act_values[0][:13])  # Choix de catégorie
+    def save(self, filename):
+        self.model.save(filename)
 
-    def choose_reroll_action(self, state):
-        if np.random.rand() <= self.epsilon:
-            reroll_choices = [random.choice([0, 1]) for _ in range(5)]  # Choix aléatoire pour chaque dé
-            reroll_flag = random.choice([0, 1])  # Choix aléatoire pour continuer à relancer
-            return reroll_choices, reroll_flag
-        act_values = self.model.predict(state)
-        reroll_choices = (act_values[0][13:18] > 0.5).astype(int).tolist()  # Booléens pour relancer
-        reroll_flag = 1 if act_values[0][18] > 0.5 else 0  # Booléen pour continuer à relancer
-        return reroll_choices, reroll_flag
+    def load(self, filename):
+        self.model = tf.keras.models.load_model(filename)
+        
+    def predict(self, inputs):
+        # Ensure input is a NumPy array
+        inputs = np.array(inputs, dtype=np.float32)
+        return self.model.predict(inputs) # Return the model's prediction 1 roll vs category, 5 dice reroll indicators, 13 category scores
+    
+    def evaluate_score(self, final_score):
+        """Evaluate the score and update the model based on rewards."""
+        reward = 0
 
-    def learn(self):
-        if len(self.memory) < self.batch_size:
-            return
+        # Compare with the best score
+        if final_score > self.best_score:
+            reward = 1  # Reward for improvement
+            self.best_score = final_score  # Update best score
+            print(f"New best score: {final_score}")
+        else:
+            reward = -1  # Punishment for not improving
+            print(f"Score did not improve: {final_score}")
 
-        minibatch = random.sample(self.memory, self.batch_size)
-        for state, action, reward, next_state in minibatch:
-            target = self.model.predict(state)
-            print("Shape of target:", target.shape)  # Pour le débogage
+        return reward
 
-            # Vérifiez que l'action est valide
-            if 0 <= action < target.shape[1]:
-                target[0][action] = reward + self.gamma * np.max(self.model.predict(next_state)[0])
-            else:
-                print(f"Invalid action: {action}")  # Alerte si l'action n'est pas valide
+    def train_with_reward(self, inputs, score , epochs=10):
+        """Entraîner le modèle avec une récompense basée sur le score final."""
+        # Évaluer le score
+        if score == 0:
+            reward = -0.1
+        else:
+            reward = self.evaluate_score(score)
+            
 
-            self.model.fit(state, target, epochs=1, verbose=0)
+        # Créer les outputs avec la récompense
+        outputs = np.zeros((19), dtype=np.float32)
+        action_index = 0
+        outputs[action_index] = reward
 
-    def update_epsilon(self, episode):
-        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+        if action_index == 0:
+            outputs[1] = 1
 
+        # Ajouter l'expérience à la mémoire de replay
+        self.replay_memory.add((inputs, outputs))
+
+        # Si la mémoire contient suffisamment d'expériences, entraînez le modèle
+        if self.replay_memory.size() > 32:  # Par exemple, utilisez un lot de 32
+            batch = self.replay_memory.sample(32)
+            batch_inputs, batch_outputs = zip(*batch)
+            print(f"batch_outputs: {np.array(batch_outputs).shape}")
+            self.train(np.array(batch_inputs), np.array(batch_outputs), epochs)
+        
+        
+    
+def get_ia_yahtzee():
+    return YahtzeeAI()
